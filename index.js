@@ -16,7 +16,6 @@ module.exports = function (source, inputSourceMap) {
         query = loaderUtils.parseQuery(this.query),
         callback = this.async(),
         originalSource = source,
-        globalVars = [],
         exportedVars = [],
         config;
 
@@ -27,31 +26,25 @@ module.exports = function (source, inputSourceMap) {
     mapBuilder(config.paths, config.watch).then(function(provideMap) {
         var provideRegExp = /goog\.provide *?\((['"])(.*)\1\);?/,
             requireRegExp = /goog\.require *?\((['"])(.*)\1\);?/,
-            globalVarTree = {},
             exportVarTree = {},
             matches;
 
-        while (matches = provideRegExp.exec(source)) {
-            source = source.replace(new RegExp(escapeRegExp(matches[0]), 'g'), '');
-            globalVars.push(matches[2]);
+        var provideSource = source;
+        while (matches = provideRegExp.exec(provideSource)) {
+            provideSource = provideSource.replace(new RegExp(escapeRegExp(matches[0]), 'g'), '');
             exportedVars.push(matches[2]);
         }
 
         while (matches = requireRegExp.exec(source)) {
             source = replaceRequire(source, matches[2], matches[0], provideMap);
-            globalVars.push(matches[2]);
         }
-
-        globalVars = globalVars
-            .filter(deduplicate)
-            .map(buildVarTree(globalVarTree));
 
         exportedVars = exportedVars
             .filter(deduplicate)
             .filter(removeNested)
             .map(buildVarTree(exportVarTree));
 
-        prefix = createPrefix(globalVarTree);
+        prefix = createPrefix();
         postfix = createPostfix(exportVarTree, exportedVars, config);
 
         if(inputSourceMap) {
@@ -98,7 +91,7 @@ module.exports = function (source, inputSourceMap) {
         }
 
         path = loaderUtils.stringifyRequest(self, provideMap[key]);
-        return source.replace(new RegExp(escapeRegExp(search), 'g'), key + '=require(' + path + ').' + key + ';');
+        return source.replace(new RegExp(escapeRegExp(search), 'g'), 'goog.exportSymbol(\'' + key + '\', require(' + path + '), goog);\nvar COMPILED = goog.global[\'COMPILED\'];');
     }
 
     /**
@@ -185,35 +178,12 @@ module.exports = function (source, inputSourceMap) {
     }
 
     /**
-     * Create a string to inject before the actual module code
+     * Create a string that imports 'goog' before the actual module code.
      *
-     * This will create all provided or required namespaces. It will merge those namespaces into an existing
-     * object if existent. The declarations will be executed via eval because other plugins or loaders like
-     * the ProvidePlugin will see that a variable is created and might not work as expected.
-     *
-     * Example: If you require or provide a namespace under 'goog' and have the closure library export
-     * its global goog object and use that via ProvidePlugin, the plugin wouldn't inject the goog variable
-     * into a module that creates its own goog variables. That's why it has to be executed in eval.
-     *
-     * @param globalVarTree
      * @returns {string}
      */
-    function createPrefix(globalVarTree) {
-        var merge = "var __merge=require(" + loaderUtils.stringifyRequest(self, require.resolve('deepmerge')) + ");";
-        prefix = '';
-        Object.keys(globalVarTree).forEach(function (rootVar) {
-            prefix += [
-                'var ',
-                rootVar,
-                '=__merge(',
-                rootVar,
-                '||{},',
-                JSON.stringify(globalVarTree[rootVar]),
-                ');'
-            ].join('');
-        });
-
-        return merge + "eval('" +  prefix.replace(/'/g, "\\'") + "');";
+    function createPrefix() {
+        return "var goog = require(" + loaderUtils.stringifyRequest(self, require.resolve('google-closure-library/closure/goog/base')) + ");";
     }
 
     /**
